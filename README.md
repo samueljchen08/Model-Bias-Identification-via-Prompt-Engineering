@@ -30,7 +30,7 @@ pytest                      # offline unit tests, no API calls
 ```
 
 `.env` holds `PARLEY_API_KEY`, `PARLEY_BASE_URL` (default `https://parley.api.mit.edu/v1`) and
-`JUDGE_MODEL` (a Parley model id such as `openai/gpt-5.4-nano` or `bedrock/claude-haiku-4-5`).
+`JUDGE_MODEL` (a Parley model id as listed by `/v1/models`, e.g. `gpt-5-mini`, `claude-haiku-4-5`, `llama-4-maverick-17b`; the free Llama model has a monthly token allowance).
 
 ## Running
 

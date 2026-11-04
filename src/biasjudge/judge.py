@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from .prompt import JudgeAssociation
 
 DEFAULT_BASE_URL = "https://parley.api.mit.edu/v1"
-DEFAULT_MODEL = "openai/gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-5-mini"
 
 
 @dataclass(frozen=True)
