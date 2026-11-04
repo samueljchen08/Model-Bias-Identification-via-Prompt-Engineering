@@ -44,7 +44,9 @@ def per_attribute_table(results: Path) -> pd.DataFrame:
     rows = []
     for s in _test_summaries(results):
         for r in s["per_attribute"]:
-            rows.append({"condition": s["condition"], "n": s["n"], "seed": s["seed"], **r})
+            rows.append({"condition": s["condition"], "n": s["n"], "seed": s["seed"],
+                         "base_attribute": r["base_attribute"], "n_items": r["n"],
+                         "mean_signed_error": r["mean_signed_error"]})
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
