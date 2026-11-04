@@ -1,0 +1,29 @@
+[project]
+name = "biasjudge"
+version = "0.1.0"
+description = "Model Bias Identification via Prompt Engineering: calibrating an LLM judge to human harmfulness ratings on StereoTales"
+requires-python = ">=3.11"
+dependencies = [
+  "dspy>=3.4",
+  "datasets>=3.0",
+  "huggingface_hub>=0.30",
+  "pandas>=2.2",
+  "pyarrow>=16",
+  "numpy>=1.26",
+  "scipy>=1.13",
+  "matplotlib>=3.9",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
