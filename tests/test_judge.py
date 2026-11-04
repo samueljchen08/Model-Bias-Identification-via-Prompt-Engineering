@@ -33,7 +33,10 @@ def test_make_lm_parameters():
     assert r.kwargs["reasoning_effort"] == "low"
 
     refl = make_lm(s, role="reflection")
-    assert refl.kwargs["temperature"] == 1.0 and max_tokens_of(refl) >= 16000
+    assert refl.kwargs["temperature"] == 1.0 and max_tokens_of(refl) == 8000
+    assert refl.model == "openai/bedrock/claude-haiku-4-5"
+    refl2 = make_lm(Settings(api_key="k", base_url=s.base_url, model="llama", reflection_model="gpt-5-mini"), role="reflection")
+    assert refl2.model == "openai/gpt-5-mini" and max_tokens_of(refl2) == 16000
 
 
 def test_build_judge_overrides():

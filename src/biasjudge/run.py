@@ -81,7 +81,8 @@ def prepare_judge(
         meta.update(
             instructions=instructions,
             demo_ids=[d.value_association_id for d in trainset],
-            optimizer={"name": "GEPA", "auto": "light", "seconds": round(time.time() - t0, 1)},
+            optimizer={"name": "GEPA", "auto": "light", "seconds": round(time.time() - t0, 1),
+                       "reflection_model": reflection_lm.model},
         )
         return judge, meta
     raise ValueError(f"unknown condition {condition}")

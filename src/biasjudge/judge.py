@@ -20,6 +20,7 @@ class Settings:
     api_key: str
     base_url: str
     model: str
+    reflection_model: str | None = None  # GEPA's instruction-rewriting model; defaults to the judge model
 
 
 def load_settings() -> Settings:
@@ -31,6 +32,7 @@ def load_settings() -> Settings:
         api_key=key,
         base_url=os.environ.get("PARLEY_BASE_URL", DEFAULT_BASE_URL),
         model=os.environ.get("JUDGE_MODEL", DEFAULT_MODEL),
+        reflection_model=os.environ.get("REFLECTION_MODEL") or None,
     )
 
 
@@ -43,15 +45,18 @@ def is_reasoning_model(model: str) -> bool:
 def make_lm(settings: Settings, role: str = "judge") -> dspy.LM:
     """role='judge': deterministic scoring. role='reflection': GEPA's instruction-rewriting model."""
     kwargs: dict = dict(api_base=settings.base_url, api_key=settings.api_key, cache=True)
+    model = settings.model
     if role == "reflection":
-        kwargs.update(temperature=1.0, max_tokens=16000)
+        model = settings.reflection_model or settings.model
+        # reasoning models insist on >= 16k; other models (e.g. Llama on Parley) cap at 8,192
+        kwargs.update(temperature=1.0, max_tokens=16000 if is_reasoning_model(model) else 8000)
     elif is_reasoning_model(settings.model):
         kwargs.update(temperature=1.0, max_tokens=16000, reasoning_effort="low")
     else:
         kwargs.update(temperature=0, max_tokens=128)
     # Parley is OpenAI-compatible, so litellm needs its own "openai/" provider prefix in front of
     # Parley's model id (which already carries a vendor prefix such as "openai/" or "bedrock/").
-    return dspy.LM("openai/" + settings.model, **kwargs)
+    return dspy.LM("openai/" + model, **kwargs)
 
 
 def max_tokens_of(lm: dspy.LM) -> int | None:
