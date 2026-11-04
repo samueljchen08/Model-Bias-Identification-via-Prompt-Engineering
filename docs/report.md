@@ -4,7 +4,7 @@ Status (2026-11-04): **interim**. Zero-shot, many-shot and ALLURE are complete o
 (`llama-4-maverick-17b` via MIT Parley). AutoCalibrate is not: the free model's monthly token
 quota ran out during the optimizer stage, so all 12 AutoCalibrate runs are invalid and quarantined
 in `results/invalid_quota_exhausted/`. Re-running the full grid on a paid judge is the next step
-(costs in §7).
+(costs in §8).
 
 ## 1. Question
 
@@ -83,7 +83,43 @@ weaker end of that range, which is expected for a small free model.
    a rewritten instruction block, see `results/smoke_llama/`), but the full-size runs could not
    complete on the free model. Until it is re-run, the proposal's main prediction is untested.
 
-## 5. Why the AutoCalibrate runs failed, and what changed
+## 5. Why zero-shot beats "zero-shot plus examples"
+
+The demo-based conditions are the zero-shot prompt plus more context, so one would expect them
+to do at least as well. They do not, for four reasons visible in the runs.
+
+1. **The labels are subjective, so a few examples teach the wrong lesson.** Each human median
+   comes from about 8 raters who disagree among themselves. Five random items are five noisy
+   draws, not a clean signal about what humans find harmful. A demo such as *retired →
+   heterosexual* rated 2, or *literate → stable employment* rated 4, does not generalize to the
+   next item; the judge imitates the surface pattern of the demos (which numbers appear, how
+   often) rather than the underlying judgment.
+2. **Demos shift the scale before they shift the ranking.** Zero-shot MAE is 0.63. At N = 5
+   many-shot it jumps to 0.86 while Spearman is unchanged (0.41 vs 0.39): the judge ranks items
+   as well as before but has moved its whole scale toward whatever the five demos used. Only at
+   N = 50, when the demo distribution resembles the true one, does MAE recover (0.61). Small N
+   actively hurts calibration; large N only gets back to the starting point.
+3. **ALLURE selects the worst examples to learn from.** ALLURE assumes the judge's biggest
+   errors reveal a systematic failure mode. In its original setting the labels were verifiable,
+   so "most wrong" meant wrong. Here "most wrong" means "where the model and 8 UK raters
+   disagree most", which picks the most idiosyncratic human judgments in the pool (*child →
+   homeless* rated 1). Feeding those in as ground truth tells the model the label is
+   unpredictable: at N = 5 it answers Neutral on 582 of 1,000 items (293 zero-shot); at N = 50
+   it over-corrects to 381 harmful ratings (212 zero-shot).
+4. **The zero-shot prompt is already a good few-shot prompt, and the judge is small.** The
+   human-study instructions include three worked examples and a definition of a harmful
+   stereotype, so "zero-shot" is effectively a well-written 3-shot prompt. Llama 4 Maverick is a
+   small model, and small models are fragile to long contexts full of examples; the many-shot
+   gains in Song et al. were reported for GPT-4o. A stronger judge may extract more from demos
+   and degrade less, which is one argument for the paid re-run.
+
+This is a negative result, not a bug: splits, demo selection and the presence of the human label
+in each demo were checked, and the three seeds agree. The reading is that, for a subjective
+labeling task, showing a small model more labeled items is not the same as teaching it the
+labeling criterion. That is why the untested AutoCalibrate condition, which learns the criterion
+as instructions rather than as examples, remains the interesting one.
+
+## 6. Why the AutoCalibrate runs failed, and what changed
 
 Parley's free Llama model has a monthly token allowance. It was exhausted after the 26 demo-based
 runs. GEPA swallows per-call errors, so each optimizer run silently returned the original
@@ -92,7 +128,7 @@ identical to zero-shot. Two guards were added so this cannot recur unnoticed: a 
 more than 2% of judge calls fail, and the AutoCalibrate condition aborts if GEPA returns the
 unchanged instructions.
 
-## 6. Limitations
+## 7. Limitations
 
 - Human panel is UK-only and 89.9% white; agreement means agreement with that panel.
 - ALLURE's selection step reads labels for the whole 580-item pool; only N reach the prompt.
@@ -100,7 +136,7 @@ unchanged instructions.
 - Half-integer medians (~9% of items) are excluded from the demo pool but kept in the test set.
 - The free judge is weaker than GPT-4o; conclusions about ICL may differ for a stronger model.
 
-## 7. Next step: paid judge
+## 8. Next step: paid judge
 
 Measured from Parley's per-request cost headers, the full 38-run grid costs about:
 gpt-5-nano $35 (over-rates harm badly in the smoke test), gpt-5-mini $77 (closest to GPT-4o;
@@ -109,7 +145,7 @@ one of these completes the AutoCalibrate column and lets every condition be comp
 judge. Command: set `JUDGE_MODEL` in `.env`, move `results/*.jsonl|summary.json` aside, run
 `bash scripts/run_all.sh`, then `python -m biasjudge.analyze`.
 
-## 8. Reproduction
+## 9. Reproduction
 
 ```bash
 pip install -e ".[dev]" && pytest          # 23 offline tests
