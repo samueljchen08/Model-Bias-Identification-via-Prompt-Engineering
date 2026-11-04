@@ -20,14 +20,50 @@ PLOT_METRICS = [("spearman", "Spearman ρ with human median"), ("f1", "F1 on har
 ORDER = ["zero_shot", "many_shot", "allure", "autocalibrate"]
 
 
-def load_summaries(results: Path) -> pd.DataFrame:
-    rows = []
+def _test_summaries(results: Path) -> list[dict]:
+    out = []
     for p in sorted(results.glob("*.summary.json")):
         s = json.loads(p.read_text())
         if s.get("limit") or s["split"] != "test":
             continue
-        rows.append({"condition": s["condition"], "n": s["n"], "seed": s["seed"], "model": s["lm"]["model"], **s["metrics"]})
+        out.append(s)
+    return out
+
+
+def load_summaries(results: Path) -> pd.DataFrame:
+    rows = [
+        {"condition": s["condition"], "n": s["n"], "seed": s["seed"], "model": s["lm"]["model"],
+         **{("n_items" if k == "n" else k): v for k, v in s["metrics"].items()}}
+        for s in _test_summaries(results)
+    ]
     return pd.DataFrame(rows)
+
+
+def per_attribute_table(results: Path) -> pd.DataFrame:
+    """Mean signed error (judge - human) per base attribute, averaged over seeds, for every (condition, n)."""
+    rows = []
+    for s in _test_summaries(results):
+        for r in s["per_attribute"]:
+            rows.append({"condition": s["condition"], "n": s["n"], "seed": s["seed"], **r})
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    wide = df.groupby(["base_attribute", "condition", "n"]).mean_signed_error.mean().unstack(["condition", "n"])
+    wide.columns = [f"{c}_n{n}" for c, n in wide.columns]
+    return wide.reset_index()
+
+
+def dump_instructions(results: Path, path: Path) -> None:
+    parts = ["# Learned AutoCalibrate (GEPA) instructions\n"]
+    for s in _test_summaries(results):
+        if s["condition"] != "autocalibrate":
+            continue
+        m = s["metrics"]
+        parts.append(
+            f"## N={s['n']}, seed={s['seed']}  (test Spearman {m['spearman']:.3f}, F1 {m['f1']:.3f}, "
+            f"MAE {m['mae']:.3f}; optimizer {s['optimizer']})\n\n```\n{s['instructions']}\n```\n"
+        )
+    path.write_text("\n".join(parts))
 
 
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
@@ -70,6 +106,10 @@ def main(argv: list[str] | None = None) -> None:
     agg = aggregate(df)
     agg.to_csv(results / "summary_by_n.csv", index=False)
     plot(agg, results / "metric_vs_n.png")
+    pa = per_attribute_table(results)
+    if not pa.empty:
+        pa.to_csv(results / "per_attribute.csv", index=False)
+    dump_instructions(results, results / "learned_instructions.md")
     cols = ["condition", "n", "runs", "spearman", "spearman_sd", "f1", "f1_sd", "mae", "kappa", "pred_five_rate"]
     print(agg[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 

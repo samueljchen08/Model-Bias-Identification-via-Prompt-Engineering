@@ -28,6 +28,7 @@ from .prompt import HUMAN_INSTRUCTIONS
 CONDITIONS = ("zero_shot", "many_shot", "allure", "autocalibrate")
 POOL_SIZE_TEST = 1000
 SPLIT_SEED = 0
+MAX_FAILED_FRACTION = 0.02  # abort a run (instead of writing a summary) if more than 2% of calls fail
 
 
 def result_name(condition: str, n: int, seed: int, split: str, limit: int | None) -> str:
@@ -78,6 +79,11 @@ def prepare_judge(
         log_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
         judge, instructions = optimize_instructions(build_judge(), trainset, seed, reflection_lm, log_dir=str(log_dir))
+        if instructions == HUMAN_INSTRUCTIONS:
+            raise RuntimeError(
+                "GEPA returned the original instructions: no candidate was ever proposed. "
+                "Usually the reflection model's calls are failing (quota, token limit); check the log above."
+            )
         meta.update(
             instructions=instructions,
             demo_ids=[d.value_association_id for d in trainset],
@@ -139,6 +145,13 @@ def main(argv: list[str] | None = None, lm: dspy.LM | None = None, reflection_lm
     elapsed = round(time.time() - t0, 1)
 
     preds = pd.DataFrame(records)
+    n_failed = int(preds.harmful_rating.isna().sum())
+    if n_failed > MAX_FAILED_FRACTION * len(preds):
+        first_error = preds.error.dropna().iloc[0] if preds.error.notna().any() else "unknown"
+        raise RuntimeError(
+            f"{n_failed}/{len(preds)} judge calls failed; refusing to write a misleading summary. "
+            f"First error: {first_error}"
+        )
     merged = target.merge(preds.drop(columns=["statement"]), on="value_association_id", how="left")
     name = result_name(args.condition, args.n, args.seed, args.split, args.limit)
     with (out_dir / f"{name}.jsonl").open("w") as f:
