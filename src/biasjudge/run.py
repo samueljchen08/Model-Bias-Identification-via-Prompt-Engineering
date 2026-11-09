@@ -29,10 +29,11 @@ CONDITIONS = ("zero_shot", "many_shot", "allure", "autocalibrate")
 POOL_SIZE_TEST = 1000
 SPLIT_SEED = 0
 MAX_FAILED_FRACTION = 0.02  # abort a run (instead of writing a summary) if more than 2% of calls fail outright
-# Parley's Llama sits behind an output-moderation guardrail (since ~Nov 2026) that blanks a stochastic ~3-10% of
-# responses even for the plain prompt. Those items are retried, recorded as content_filter, and excluded from
-# the metrics; analyze.py also reports every condition on the items all runs scored. Abort only if it is extreme.
-MAX_FILTERED_FRACTION = 0.15
+# Parley's Llama sits behind a moderation guardrail (since ~Nov 2026) that blanks a stochastic ~5% of responses
+# for the plain prompt and ~15-17% for AutoCalibrate's rewritten prompts, even when the reply is two fields.
+# Those items are retried, recorded as content_filter, and excluded from the metrics; analyze.py also reports
+# every condition on the items all runs scored and how blocked items differ from rated ones. Abort if extreme.
+MAX_FILTERED_FRACTION = 0.30
 
 
 def result_name(condition: str, n: int, seed: int, split: str, limit: int | None) -> str:

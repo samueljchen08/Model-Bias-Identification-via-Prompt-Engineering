@@ -94,6 +94,28 @@ def common_items_table(results: Path) -> tuple[pd.DataFrame, int]:
     return pd.DataFrame(rows), len(common)
 
 
+def blocked_items_table(results: Path) -> pd.DataFrame:
+    """Per run: how many items ended unrated and whether they differ from rated items on the human labels.
+
+    Guardrail-blocked items are not a random subset (they concentrate on disability, immigration,
+    employment), so a run's metrics describe a slightly easier set; this table shows by how much."""
+    rows = []
+    for p in sorted(results.glob("*_test.jsonl")):
+        if "_limit" in p.name:
+            continue
+        d = pd.read_json(p, lines=True)
+        s = json.loads((results / f"{p.stem}.summary.json").read_text())
+        unrated, rated = d[d.harmful_rating.isna()], d[d.harmful_rating.notna()]
+        rows.append({"condition": s["condition"], "n": s["n"], "seed": s["seed"],
+                     "n_unrated": len(unrated),
+                     "n_blocked": int((d.get("error_kind") == "content_filter").sum()) if "error_kind" in d else 0,
+                     "human_median_unrated": unrated.human_median.mean() if len(unrated) else float("nan"),
+                     "human_median_rated": rated.human_median.mean(),
+                     "harmful_rate_unrated": unrated.harmful.mean() if len(unrated) else float("nan"),
+                     "harmful_rate_rated": rated.harmful.mean()})
+    return pd.DataFrame(rows)
+
+
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
     metric_cols = [c for c in df.columns if c not in ("condition", "n", "seed", "model")]
     g = df.groupby(["condition", "n"])[metric_cols]
@@ -141,6 +163,9 @@ def main(argv: list[str] | None = None) -> None:
     cols = ["condition", "n", "runs", "spearman", "spearman_sd", "f1", "f1_sd", "mae", "kappa", "pred_five_rate"]
     print("All rated items per run:")
     print(agg[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    blocked = blocked_items_table(results)
+    if not blocked.empty:
+        blocked.to_csv(results / "blocked_items.csv", index=False)
     common, n_common = common_items_table(results)
     if not common.empty:
         common.to_csv(results / "summary_common.csv", index=False)
