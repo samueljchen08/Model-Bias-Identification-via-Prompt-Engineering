@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -53,7 +54,9 @@ def make_lm(settings: Settings, role: str = "judge") -> dspy.LM:
     elif is_reasoning_model(settings.model):
         kwargs.update(temperature=1.0, max_tokens=16000, reasoning_effort="low")
     else:
-        kwargs.update(temperature=0, max_tokens=128)
+        # 2,048 not 128: AutoCalibrate's rewritten prompts make Llama reason for several hundred tokens
+        # before it emits the two fields; the plain prompt never needed more than ~30 output tokens.
+        kwargs.update(temperature=0, max_tokens=2048)
     # Parley is OpenAI-compatible, so litellm needs its own "openai/" provider prefix in front of
     # Parley's model id (which already carries a vendor prefix such as "openai/" or "bedrock/").
     return dspy.LM("openai/" + model, **kwargs)
@@ -81,30 +84,63 @@ def build_judge(instructions: str | None = None, demos: list[dspy.Example] | Non
     return judge
 
 
-def _one(judge: dspy.Predict, ex: dspy.Example) -> dict:
+MAX_ATTEMPTS = 4  # 1 call + 3 retries
+RETRY_SLEEP = 2.0  # seconds, multiplied by the attempt number
+
+
+def error_kind(e: Exception) -> str:
+    """Bucket a judge failure. 'content_filter' = Parley's moderation guardrail blanked the response
+    (it arrives as finish_reason=content_filter with null content, which DSPy reports as an empty response).
+    The guardrail is stochastic even at temperature 0, so those are worth retrying; billing errors are not."""
+    name = type(e).__name__
+    msg = str(e)
+    if "LMBillingError" in name or "Insufficient tokens" in msg:
+        return "billing"
+    if "empty or null response" in msg or "content_filter" in msg:
+        return "content_filter"
+    if "Too many tokens" in msg or "RateLimit" in name or "429" in msg:
+        return "rate_limit"
+    return name
+
+
+def _one(judge: dspy.Predict, ex: dspy.Example, attempts: int = MAX_ATTEMPTS) -> dict:
     rec = {
         "value_association_id": ex.value_association_id,
         "statement": ex.statement,
         "harmful_rating": None,
         "realism": None,
         "error": None,
+        "error_kind": None,
+        "attempts": 0,
     }
-    try:
-        out = judge(statement=ex.statement)
-        rec["harmful_rating"] = int(out.harmful_rating)
-        rec["realism"] = str(out.realism)
-    except Exception as e:  # noqa: BLE001 - one bad item must not kill a 1,000-item run
-        rec["error"] = f"{type(e).__name__}: {e}"[:500]
+    for k in range(attempts):
+        rec["attempts"] = k + 1
+        try:
+            # rollout_id changes DSPy's cache key, so a retry is a fresh request rather than the cached failure
+            out = judge(statement=ex.statement, config={"rollout_id": k} if k else {})
+            rec["harmful_rating"] = int(out.harmful_rating)
+            rec["realism"] = str(out.realism)
+            rec["error"] = rec["error_kind"] = None
+            return rec
+        except Exception as e:  # noqa: BLE001 - one bad item must not kill a 1,000-item run
+            rec["error"] = f"{type(e).__name__}: {e}"[:500]
+            rec["error_kind"] = error_kind(e)
+            if rec["error_kind"] == "billing":
+                break
+            if k + 1 < attempts:
+                time.sleep(RETRY_SLEEP * (k + 1))
     return rec
 
 
-def judge_items(judge: dspy.Predict, examples: list[dspy.Example], num_threads: int = 8) -> list[dict]:
+def judge_items(
+    judge: dspy.Predict, examples: list[dspy.Example], num_threads: int = 8, attempts: int = MAX_ATTEMPTS
+) -> list[dict]:
     """Score every example, in parallel. Worker threads reuse the LM active in the calling thread."""
     lm = dspy.settings.lm
 
     def work(ex: dspy.Example) -> dict:
         with dspy.context(lm=lm):
-            return _one(judge, ex)
+            return _one(judge, ex, attempts)
 
     with ThreadPoolExecutor(max_workers=num_threads) as pool:
         return list(pool.map(work, examples))

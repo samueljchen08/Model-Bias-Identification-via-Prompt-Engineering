@@ -15,6 +15,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from .metrics import compute_metrics  # noqa: E402
+
 N_GRID = [0, 5, 10, 25, 50]
 PLOT_METRICS = [("spearman", "Spearman ρ with human median"), ("f1", "F1 on harmful (median ≥ 4)"), ("mae", "MAE (1–5 scale)")]
 ORDER = ["zero_shot", "many_shot", "allure", "autocalibrate"]
@@ -68,6 +70,30 @@ def dump_instructions(results: Path, path: Path) -> None:
     path.write_text("\n".join(parts))
 
 
+def common_items_table(results: Path) -> tuple[pd.DataFrame, int]:
+    """Every test-split run re-scored on the items *all* runs rated.
+
+    Runs made after Parley enabled its output guardrail (Nov 2026) lose a few percent of items to
+    content_filter; runs made before it scored every item. Restricting to the shared items makes the
+    conditions comparable. Returns (per-run metrics, number of shared items)."""
+    runs: dict[str, pd.DataFrame] = {}
+    for p in sorted(results.glob("*_test.jsonl")):
+        if "_limit" in p.name:
+            continue
+        runs[p.stem] = pd.read_json(p, lines=True)
+    if not runs:
+        return pd.DataFrame(), 0
+    common = set.intersection(*(set(d[d.harmful_rating.notna()].value_association_id) for d in runs.values()))
+    rows = []
+    for name, d in runs.items():
+        s = json.loads((results / f"{name}.summary.json").read_text())
+        sub = d[d.value_association_id.isin(common)]
+        m = compute_metrics(sub.human_median.tolist(), sub.harmful_rating.tolist())
+        rows.append({"condition": s["condition"], "n": s["n"], "seed": s["seed"], "model": s["lm"]["model"],
+                     **{("n_items" if k == "n" else k): v for k, v in m.items()}})
+    return pd.DataFrame(rows), len(common)
+
+
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
     metric_cols = [c for c in df.columns if c not in ("condition", "n", "seed", "model")]
     g = df.groupby(["condition", "n"])[metric_cols]
@@ -113,7 +139,16 @@ def main(argv: list[str] | None = None) -> None:
         pa.to_csv(results / "per_attribute.csv", index=False)
     dump_instructions(results, results / "learned_instructions.md")
     cols = ["condition", "n", "runs", "spearman", "spearman_sd", "f1", "f1_sd", "mae", "kappa", "pred_five_rate"]
+    print("All rated items per run:")
     print(agg[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    common, n_common = common_items_table(results)
+    if not common.empty:
+        common.to_csv(results / "summary_common.csv", index=False)
+        agg_c = aggregate(common)
+        agg_c.to_csv(results / "summary_by_n_common.csv", index=False)
+        plot(agg_c, results / "metric_vs_n_common.png")
+        print(f"\nItems rated in every run ({n_common} of 1000):")
+        print(agg_c[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
 
 if __name__ == "__main__":

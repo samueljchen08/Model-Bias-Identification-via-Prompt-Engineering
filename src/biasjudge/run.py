@@ -28,7 +28,11 @@ from .prompt import HUMAN_INSTRUCTIONS
 CONDITIONS = ("zero_shot", "many_shot", "allure", "autocalibrate")
 POOL_SIZE_TEST = 1000
 SPLIT_SEED = 0
-MAX_FAILED_FRACTION = 0.02  # abort a run (instead of writing a summary) if more than 2% of calls fail
+MAX_FAILED_FRACTION = 0.02  # abort a run (instead of writing a summary) if more than 2% of calls fail outright
+# Parley's Llama sits behind an output-moderation guardrail (since ~Nov 2026) that blanks a stochastic ~3-10% of
+# responses even for the plain prompt. Those items are retried, recorded as content_filter, and excluded from
+# the metrics; analyze.py also reports every condition on the items all runs scored. Abort only if it is extreme.
+MAX_FILTERED_FRACTION = 0.15
 
 
 def result_name(condition: str, n: int, seed: int, split: str, limit: int | None) -> str:
@@ -94,6 +98,19 @@ def prepare_judge(
     raise ValueError(f"unknown condition {condition}")
 
 
+def failure_counts(preds: pd.DataFrame) -> dict:
+    """How many items ended without a rating, split by cause, plus how many needed a retry."""
+    failed = preds[preds.harmful_rating.isna()]
+    kinds = failed.error_kind.fillna("unknown").value_counts().to_dict() if len(failed) else {}
+    n_filtered = int(kinds.pop("content_filter", 0))
+    return {
+        "content_filter": n_filtered,
+        "other": int(len(failed) - n_filtered),
+        "other_kinds": {k: int(v) for k, v in kinds.items()},
+        "retried_items": int((preds.attempts > 1).sum()) if "attempts" in preds else 0,
+    }
+
+
 def build_summary(condition, n, seed, split, limit, lm, meta, merged: pd.DataFrame) -> dict:
     metrics = compute_metrics(merged.human_median.tolist(), merged.harmful_rating.tolist())
     per_attr = per_attribute_delta(merged)
@@ -136,7 +153,8 @@ def main(argv: list[str] | None = None, lm: dspy.LM | None = None, reflection_lm
         settings = load_settings()
         lm = make_lm(settings)
         reflection_lm = make_lm(settings, role="reflection")
-    dspy.configure(lm=lm)
+    # no JSONAdapter fallback: on a guardrail-blanked response it just repeats the blocked request (2x cost)
+    dspy.configure(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False))
 
     judge, meta = prepare_judge(args.condition, args.n, args.seed, pool, out_dir, reflection_lm)
     examples = to_examples(target)  # labels ride along but are never shown to the judge
@@ -145,12 +163,12 @@ def main(argv: list[str] | None = None, lm: dspy.LM | None = None, reflection_lm
     elapsed = round(time.time() - t0, 1)
 
     preds = pd.DataFrame(records)
-    n_failed = int(preds.harmful_rating.isna().sum())
-    if n_failed > MAX_FAILED_FRACTION * len(preds):
+    failures = failure_counts(preds)
+    if failures["other"] > MAX_FAILED_FRACTION * len(preds) or failures["content_filter"] > MAX_FILTERED_FRACTION * len(preds):
         first_error = preds.error.dropna().iloc[0] if preds.error.notna().any() else "unknown"
         raise RuntimeError(
-            f"{n_failed}/{len(preds)} judge calls failed; refusing to write a misleading summary. "
-            f"First error: {first_error}"
+            f"{failures['other']} judge calls failed and {failures['content_filter']} were blocked by the guardrail "
+            f"out of {len(preds)}; refusing to write a misleading summary. First error: {first_error}"
         )
     merged = target.merge(preds.drop(columns=["statement"]), on="value_association_id", how="left")
     name = result_name(args.condition, args.n, args.seed, args.split, args.limit)
@@ -158,12 +176,13 @@ def main(argv: list[str] | None = None, lm: dspy.LM | None = None, reflection_lm
         for r in merged.to_dict(orient="records"):
             f.write(json.dumps(r, default=_json_default) + "\n")
     summary = build_summary(args.condition, args.n, args.seed, args.split, args.limit, lm, meta, merged)
+    summary["failures"] = failures
     summary["seconds"] = elapsed
     (out_dir / f"{name}.summary.json").write_text(json.dumps(summary, indent=2, default=_json_default))
 
     m = summary["metrics"]
     print(
-        f"{name}: n={m['n']} failed={m['n_failed']} spearman={m['spearman']:.3f} pearson={m['pearson']:.3f} "
+        f"{name}: n={m['n']} failed={m['n_failed']} (guardrail {failures['content_filter']}) spearman={m['spearman']:.3f} pearson={m['pearson']:.3f} "
         f"mae={m['mae']:.3f} f1={m['f1']:.3f} kappa={m['kappa']:.3f} acc={m['accuracy']:.3f} ({elapsed}s)"
     )
     return summary
