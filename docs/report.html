@@ -1,0 +1,1087 @@
+<!DOCTYPE html><html><head><meta charset='utf-8'><title>Teaching AI to Identify Bias: report</title><style>
+body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.4; max-width: 7.5in; margin: 0.6in auto; color: #111; }
+h1 { font-size: 20pt; margin-top: 0; } h2 { font-size: 15pt; margin-top: 22pt; border-bottom: 1px solid #999; padding-bottom: 3pt; }
+h3 { font-size: 12pt; margin-top: 16pt; }
+table { border-collapse: collapse; margin: 8pt 0; font-size: 8.5pt; }
+th, td { border: 1px solid #888; padding: 3pt 5pt; text-align: left; vertical-align: top; }
+th { background: #e8e8e8; }
+code { font-family: Menlo, Courier, monospace; font-size: 9pt; }
+pre { background: #f3f3f3; padding: 6pt; font-size: 8.5pt; white-space: pre-wrap; }
+blockquote { border-left: 3px solid #bbb; margin: 6pt 0; padding-left: 8pt; color: #333; }
+</style></head><body><h1>Teaching AI to Identify Bias: methods, results and analysis</h1>
+<p>Team: Maeve Chen (ALLURE), Samuel Chen (AutoCalibrate), Ruoxi Qian (baseline, writing), Jefferson Cooper (many-shot).
+Version: 2026-11-10. Code, per-run outputs and tables: <code>github.com/samueljchen08/Model-Bias-Identification-via-Prompt-Engineering</code>.</p>
+<h2>Summary</h2>
+<p>We asked whether a small number of human-labeled examples (N = 5 to 50) can make an LLM judge agree
+more closely with human raters about which socio-demographic associations in AI-generated stories
+reinforce harmful stereotypes. Using the StereoTales human study as ground truth and
+<code>llama-4-maverick-17b</code> as the judge, we compared four ways of using the labels: none (zero-shot),
+random in-context examples (many-shot), the judge's own worst mistakes as in-context examples
+(ALLURE), and an optimizer that rewrites the judge's instructions from the examples (AutoCalibrate,
+implemented with DSPy GEPA, evaluated at N = 5 and 10).</p>
+<p>None of the three methods beats the zero-shot prompt on the full test set. Many-shot matches it at
+N = 5 and drifts below it as N grows; ALLURE is worse at every N and gets worse with more examples;
+AutoCalibrate, compared on the items every run could rate, is slightly ahead of zero-shot in rank
+correlation and clearly ahead in absolute error, but behind many-shot at N = 5 and highly
+seed-dependent. The learned prompts show why: the optimizer, driven by the same small model, did not
+distil scoring criteria from the examples, it pasted the examples and its feedback into the
+instructions. For a subjective Likert label and a small judge, showing more labeled items is not
+the same as teaching the labeling criterion. The judge's errors are attribute-specific (it
+under-rates harm for disability, immigration and income) and none of the methods removes them.</p>
+<h2>1. Background and research question</h2>
+<p>StereoTales (Le Jeune et al., 2025) generates short stories with LLMs, extracts associations
+between socio-demographic attribute values ("when health status is poor, age is middle-aged more
+often than for other health status groups"), and asks both humans and LLM judges whether each
+association reinforces a harmful stereotype. The dataset reports that LLM judges systematically
+under-estimate harm relative to humans for several attributes. Our question is whether a handful of
+human labels can close that gap with prompt-based methods alone, with no fine-tuning:</p>
+<blockquote>
+<p>Given N human-labeled associations (N in {0, 5, 10, 25, 50}), how much does each prompt-based
+method raise an LLM judge's agreement with the human harmfulness median?</p>
+</blockquote>
+<p>Three published methods were chosen, each using the N labels differently:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>How the N labels are used</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Many-shot ICL</td>
+<td>N labeled items placed in the context as demonstrations</td>
+<td>Song et al., 2024</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>the N items on which the judge's own answer deviates most from the human label, placed in context as demonstrations</td>
+<td>Hasanbeig et al., 2023</td>
+</tr>
+<tr>
+<td>AutoCalibrate</td>
+<td>N labeled items drive an optimizer that drafts and refines scoring criteria; the final prompt contains rewritten instructions and no demonstrations</td>
+<td>Liu et al., 2023</td>
+</tr>
+</tbody>
+</table>
+<p>The proposal's hypothesis was that AutoCalibrate would generalise best, because it turns examples
+into criteria rather than filling the context with examples.</p>
+<h2>2. Methods</h2>
+<h3>2.1 Data and labels</h3>
+<p>Source: <code>giskardai/StereoTales</code> on Hugging Face (CC-BY-4.0), files <code>human_study/survey_results.parquet</code>
+(12,350 individual ratings) and <code>human_study/participants.parquet</code> (247 participants).</p>
+<ul>
+<li>Participants who failed any attention check were removed before aggregation (<code>passed_all_checks</code>).</li>
+<li>Unit of analysis: one <code>value_association_id</code>, e.g. <code>health_status:poor&gt;age:middle-aged (45-64)</code>.
+  1,580 unique items, 7.72 raters per item on average.</li>
+<li>Gold harm label: the per-item <strong>median</strong> of the 1-5 <code>harmful_rating</code> (the paper's aggregation).
+  Medians can be half-integers (90 of the 1,000 test items).</li>
+<li>Binary harmful label: median &gt;= 4. 281 of 1,580 items (17.8%); 178 of the 1,000 test items.</li>
+<li>Realism label: per-item majority of <code>realism</code> (yes / no / i_dont_know), ties resolved to
+  i_dont_know. Collected from the judge for fidelity to the human study but not analysed in depth.</li>
+<li>Item text: reconstructed verbatim from the human-study interface (paper Fig. 10):
+  "In the generated stories, when {base attribute} is {base value}, {compared attribute} is
+  {compared value} more often than for other {base attribute} groups." Attribute names rendered
+  with spaces.</li>
+</ul>
+<p>Distribution of human medians on the test set: 1: 16, 1.5: 8, 2: 406, 2.5: 50, 3: 313, 3.5: 29,
+4: 169, 4.5: 3, 5: 6. Humans give a 5 on 0.6% of items.</p>
+<h3>2.2 Splits</h3>
+<p>A single fixed split, seed 0, stratified on the binary harmful label, is shared by every condition:</p>
+<table>
+<thead>
+<tr>
+<th>Split</th>
+<th>Items</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Supervision pool</td>
+<td>580</td>
+<td>the only place any of the N labeled examples come from</td>
+</tr>
+<tr>
+<td>Demo pool</td>
+<td>527</td>
+<td>pool items whose median is an integer, so every demonstration carries a clean 1-5 label</td>
+</tr>
+<tr>
+<td>Test set</td>
+<td>1,000</td>
+<td>all reported numbers</td>
+</tr>
+</tbody>
+</table>
+<p>For a given (N, seed), many-shot and AutoCalibrate receive the identical N items; ALLURE receives
+its own selection (section 2.4). The test set is never used for selection or optimization.</p>
+<h3>2.3 The judge</h3>
+<ul>
+<li><strong>Model.</strong> <code>llama-4-maverick-17b</code> served by MIT Parley (<code>https://parley.api.mit.edu/v1</code>, an
+  OpenAI-compatible gateway in front of AWS Bedrock). It is the only free judge on the platform;
+  GPT-4o is not offered there.</li>
+<li><strong>Prompt.</strong> The human study's own participant instruction screens (paper appendix F, Figs 6-8),
+  reproduced verbatim as the instruction block of a DSPy signature: the context paragraph with its
+  three worked examples (benign, harmful, "positive" stereotype), the definition of a harmful
+  stereotype, the independence of the two questions, and the full list of 19 attributes and
+  their values. The judge therefore sees exactly what the human raters saw. Note this makes the
+  "zero-shot" prompt effectively a well-written three-example prompt.</li>
+<li><strong>Input and outputs.</strong> One input field, <code>statement</code> (the item sentence). Two output fields:
+  <code>harmful_rating</code> constrained to {1, 2, 3, 4, 5} and <code>realism</code> constrained to
+  {yes, no, i_dont_know}. DSPy's chat adapter renders the signature as a system message
+  (instructions plus field descriptions) and a user message (the statement) and asks for the
+  outputs in a fixed <code>[[ ## field ## ]]</code> format, which is parsed and type-checked. No chain of
+  thought is requested; the module is <code>dspy.Predict</code>.</li>
+<li><strong>Decoding.</strong> Temperature 0. Output cap 128 tokens for the zero-shot, many-shot and ALLURE runs
+  (a well-formed answer is about 25 tokens and no response in those runs was truncated) and
+  2,048 tokens for AutoCalibrate, whose rewritten instructions cause Llama to write a short
+  rationale (about 120 tokens on average) before the two fields.</li>
+<li><strong>One pass per item.</strong> Each test item is scored once per run (the paper used three repetitions
+  with randomized question order).</li>
+</ul>
+<h3>2.4 Conditions</h3>
+<p>All conditions use the same judge, prompt, output format, split and metrics. They differ only in
+what is done with the N labeled items. Each N &gt; 0 condition was run with three seeds (0, 1, 2);
+a seed changes which N items are drawn (many-shot, AutoCalibrate) or how ties are broken (ALLURE).</p>
+<p><strong>Zero-shot (N = 0).</strong> The instruction block and the statement, nothing else. Run once on the test
+set (the baseline) and once on the 580-item pool (its pool predictions are ALLURE's input).</p>
+<p><strong>Many-shot (N = 5, 10, 25, 50).</strong> N items are drawn uniformly at random from the 527-item demo pool
+with <code>random.Random(seed).sample</code>. Each becomes a DSPy demonstration: the chat adapter inserts it
+as a prior user turn (the statement) and assistant turn (the human median as <code>harmful_rating</code>, the
+human realism majority as <code>realism</code>), in the same field format the judge must produce. The N
+demonstrations precede the test statement in every call. The instruction block is unchanged.</p>
+<p><strong>ALLURE (N = 5, 10, 25, 50).</strong> The zero-shot judge is first run on the whole 580-item pool. For
+every demo-pool item we compute |judge rating - human median|; the N items with the largest gap are
+selected, ties broken by a seeded random draw. These are placed in context exactly as in many-shot,
+each carrying the human label, so the judge is shown its own worst disagreements with humans
+together with the human answer. Note the selection step reads labels for the whole pool even
+though only N reach the prompt; this is inherent to the method and is stated as a limitation.</p>
+<p><strong>AutoCalibrate (N = 5, 10).</strong> Liu et al. draft scoring criteria from a few labeled examples, revisit
+them using the examples the judge got wrong, and keep the best-aligned criteria. We implement that
+loop with DSPy's GEPA optimizer (Agrawal et al., 2025), which does the same thing generically:</p>
+<ol>
+<li>Start from the verbatim human-study instruction block.</li>
+<li>Run the judge on the N labeled items (the same N items many-shot gets for this seed).</li>
+<li>Score each answer with 1 - |human median - judge rating| / 4 and attach textual feedback, e.g.
+   "You rated 2; the median human rating was 3. You under-estimated how strongly humans think this
+   association reinforces a harmful stereotype."</li>
+<li>Show a reflection model the current instructions, the items, the answers and the feedback, and
+   ask it to propose a rewritten instruction block.</li>
+<li>Evaluate the candidate on the N items; keep candidates on the Pareto front over items; repeat
+   from step 2 with a randomly chosen surviving candidate until the budget is spent.</li>
+<li>Return the candidate with the best mean score on the N items, with its demonstrations removed,
+   so the final prompt is rewritten instructions only.</li>
+</ol>
+<p>Settings: <code>auto="light"</code> (about 400 judge evaluations per run; 400-425 were used), four threads,
+<code>valset = trainset</code> (there is no held-out set at N = 5), seeded. The reflection model is the same
+Llama (temperature 1.0, 8,000-token cap), because the design decision was to stay on the free
+model. Each run yields one learned instruction block, saved in the run's summary and in
+<code>results/learned_instructions.md</code>. The N = 5 seed 0 run reuses the optimizer state GEPA saved on
+Nov 3 (its search had finished before the first key's quota ran out); the other runs were
+optimized on Nov 9. N = 25 and 50 are outside the scope of this report (section 6).</p>
+<h3>2.5 Metrics</h3>
+<p>Computed per run on the test items that run rated, judge rating against human median:</p>
+<ul>
+<li><strong>Spearman rho</strong> and <strong>Pearson r</strong>: rank and linear agreement on the 1-5 scale. Spearman is the
+  primary metric because the human medians are ordinal and bunched at 2 and 3.</li>
+<li><strong>MAE</strong>: mean |judge - human| on the 1-5 scale; measures calibration of the scale, not ranking.</li>
+<li><strong>F1, accuracy, Cohen's kappa</strong> on the binary harmful label (both sides thresholded at &gt;= 4).
+  F1 is the positive-class F1 for "harmful".</li>
+<li><strong>Rate of 5s</strong>: how often the judge uses "Strongly agree" (humans: 0.6%).</li>
+<li><strong>Per-attribute mean signed error</strong>: mean (judge - human) grouped by the base attribute of the
+  association; negative means the judge under-rates harm for that attribute.</li>
+</ul>
+<p>Means and standard deviations are over seeds. Reference points use the dataset's own zero-shot
+LLM-judge ratings (<code>llm_evals/eval_results.parquet</code>, 23 models) restricted to our 1,000 test items.</p>
+<h3>2.6 Execution</h3>
+<ul>
+<li>Every call goes through DSPy with on-disk caching, so re-running a finished item is free and a
+  run that aborts can be resumed.</li>
+<li>Eight concurrent judge calls per run. A 1,000-item test pass takes 5-15 minutes.</li>
+<li>A run aborts, rather than writing a summary, if more than 2% of calls fail outright, if more than
+  30% of items are blocked by the platform guardrail (below), or if the optimizer returns the
+  unchanged instructions (which is what happens silently when its calls are failing).</li>
+<li><strong>Platform guardrail.</strong> Between Nov 3 and Nov 9, 2026, Parley placed its free Llama behind a
+  moderation guardrail (HTTP 200, <code>finish_reason = content_filter</code>, empty content). It acts on the
+  response rather than the prompt (a one-token reply always passes), it is stochastic, and it
+  fires on about 5% of items for the plain prompt and 5-21% for AutoCalibrate's rewritten prompts,
+  whether or not Llama writes a rationale. Blocked calls are retried three times with a fresh
+  cache key; items that remain blocked are recorded as <code>content_filter</code>, excluded from that run's
+  metrics, and tabulated (<code>results/blocked_items.csv</code>). The zero-shot, many-shot and ALLURE runs
+  were made before the guardrail existed and rated every item; the AutoCalibrate runs were made
+  after it. Section 3.2 therefore reports every condition on the items all runs rated.</li>
+<li>Run inventory: zero-shot 1 run; many-shot 11 runs (N = 50 seed 2 missing); ALLURE 10 runs
+  (N = 50 seeds 1-2 missing); AutoCalibrate 5 runs (N = 5 seeds 0-2, N = 10 seeds 0-1). The
+  missing runs were lost to the free model's monthly token quota, which both of the keys used
+  for the project exhausted; three N = 50 runs that had been written with 638-1,000 failed calls
+  before the abort guard existed are quarantined in <code>results/invalid_quota_exhausted/</code> and
+  excluded everywhere below.</li>
+</ul>
+<h2>3. Results</h2>
+<h3>3.1 Test set, each run on the items it rated</h3>
+<p>Mean +- sd over seeds. Runs per cell: 3 unless stated.</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>N</th>
+<th>Items rated</th>
+<th>Spearman rho</th>
+<th>Pearson r</th>
+<th>F1 harmful</th>
+<th>kappa</th>
+<th>Accuracy</th>
+<th>MAE</th>
+<th>Rate of 5s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Zero-shot</td>
+<td>0</td>
+<td>1,000</td>
+<td>0.393</td>
+<td>0.407</td>
+<td>0.469</td>
+<td>0.341</td>
+<td>0.792</td>
+<td>0.625</td>
+<td>0.002</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>5</td>
+<td>1,000</td>
+<td>0.407 +- 0.007</td>
+<td>0.413</td>
+<td>0.462 +- 0.005</td>
+<td>0.310</td>
+<td>0.747</td>
+<td>0.855 +- 0.104</td>
+<td>0.009</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>10</td>
+<td>1,000</td>
+<td>0.383 +- 0.034</td>
+<td>0.400</td>
+<td>0.440 +- 0.023</td>
+<td>0.325</td>
+<td>0.808</td>
+<td>0.706 +- 0.086</td>
+<td>0.014</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>25</td>
+<td>1,000</td>
+<td>0.361 +- 0.052</td>
+<td>0.364</td>
+<td>0.397 +- 0.055</td>
+<td>0.263</td>
+<td>0.779</td>
+<td>0.640 +- 0.042</td>
+<td>0.011</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>50 (2 seeds)</td>
+<td>997-998</td>
+<td>0.380 +- 0.024</td>
+<td>0.382</td>
+<td>0.409 +- 0.060</td>
+<td>0.260</td>
+<td>0.758</td>
+<td>0.611 +- 0.020</td>
+<td>0.005</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>5</td>
+<td>1,000</td>
+<td>0.350 +- 0.025</td>
+<td>0.361</td>
+<td>0.448 +- 0.023</td>
+<td>0.314</td>
+<td>0.781</td>
+<td>0.766 +- 0.031</td>
+<td>0.054</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>10</td>
+<td>1,000</td>
+<td>0.337 +- 0.017</td>
+<td>0.348</td>
+<td>0.431 +- 0.012</td>
+<td>0.285</td>
+<td>0.761</td>
+<td>0.839 +- 0.056</td>
+<td>0.064</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>25</td>
+<td>1,000</td>
+<td>0.243 +- 0.064</td>
+<td>0.271</td>
+<td>0.413 +- 0.007</td>
+<td>0.241</td>
+<td>0.696</td>
+<td>0.914 +- 0.075</td>
+<td>0.048</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>50 (1 seed)</td>
+<td>997</td>
+<td>0.247</td>
+<td>0.255</td>
+<td>0.415</td>
+<td>0.223</td>
+<td>0.658</td>
+<td>0.864</td>
+<td>0.025</td>
+</tr>
+<tr>
+<td>AutoCalibrate</td>
+<td>5</td>
+<td>826-952</td>
+<td>0.338 +- 0.016</td>
+<td>0.351</td>
+<td>0.373 +- 0.076</td>
+<td>0.272</td>
+<td>0.819</td>
+<td>0.596 +- 0.029</td>
+<td>0.007</td>
+</tr>
+<tr>
+<td>AutoCalibrate</td>
+<td>10 (2 seeds)</td>
+<td>792-903</td>
+<td>0.363 +- 0.047</td>
+<td>0.375</td>
+<td>0.336 +- 0.156</td>
+<td>0.233</td>
+<td>0.800</td>
+<td>0.646 +- 0.034</td>
+<td>0.002</td>
+</tr>
+</tbody>
+</table>
+<p>Figure: <code>results/metric_vs_n.png</code>. Per-run values: <code>results/summary.csv</code>.</p>
+<p>The AutoCalibrate rows are not directly comparable with the rows above them. Those runs lost
+48-208 items each to the guardrail, and the blocked items are the harmful ones: the human harmful
+rate is 30-67% among blocked items versus 13-15% among rated items, and the block rate rises with
+the human median (5% of items rated 1 or 2, 15% of items rated 3, 29% of items rated 4, 37% of
+items rated 5). Disability status (28% blocked), housing status (23%) and gender (22%) are the
+most affected base attributes. AutoCalibrate is therefore scored on an easier subset.</p>
+<h3>3.2 Test set, the 659 items every run rated</h3>
+<p>Restricting every run to the items that all 27 runs rated puts the conditions on the same footing.
+Because the removed items are mostly the strongly harmful ones, the human scale is compressed and
+every correlation is lower than in 3.1; differences between rows, not absolute values, are the
+point of this table.</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>N</th>
+<th>Spearman rho</th>
+<th>Pearson r</th>
+<th>F1 harmful</th>
+<th>kappa</th>
+<th>Accuracy</th>
+<th>MAE</th>
+<th>Rate of 5s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Zero-shot</td>
+<td>0</td>
+<td>0.262</td>
+<td>0.289</td>
+<td>0.315</td>
+<td>0.243</td>
+<td>0.868</td>
+<td>0.605</td>
+<td>0.003</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>5</td>
+<td>0.330 +- 0.012</td>
+<td>0.338</td>
+<td>0.338 +- 0.012</td>
+<td>0.238</td>
+<td>0.815</td>
+<td>0.876 +- 0.115</td>
+<td>0.007</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>10</td>
+<td>0.296 +- 0.034</td>
+<td>0.306</td>
+<td>0.303 +- 0.013</td>
+<td>0.233</td>
+<td>0.869</td>
+<td>0.684 +- 0.076</td>
+<td>0.011</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>25</td>
+<td>0.279 +- 0.030</td>
+<td>0.276</td>
+<td>0.269 +- 0.032</td>
+<td>0.181</td>
+<td>0.842</td>
+<td>0.600 +- 0.038</td>
+<td>0.010</td>
+</tr>
+<tr>
+<td>Many-shot</td>
+<td>50 (2 seeds)</td>
+<td>0.299 +- 0.016</td>
+<td>0.293</td>
+<td>0.272 +- 0.031</td>
+<td>0.165</td>
+<td>0.805</td>
+<td>0.598 +- 0.011</td>
+<td>0.005</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>5</td>
+<td>0.251 +- 0.032</td>
+<td>0.272</td>
+<td>0.332 +- 0.036</td>
+<td>0.252</td>
+<td>0.854</td>
+<td>0.770 +- 0.071</td>
+<td>0.042</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>10</td>
+<td>0.261 +- 0.019</td>
+<td>0.274</td>
+<td>0.312 +- 0.036</td>
+<td>0.218</td>
+<td>0.829</td>
+<td>0.845 +- 0.048</td>
+<td>0.041</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>25</td>
+<td>0.132 +- 0.089</td>
+<td>0.155</td>
+<td>0.255 +- 0.039</td>
+<td>0.135</td>
+<td>0.743</td>
+<td>0.931 +- 0.095</td>
+<td>0.026</td>
+</tr>
+<tr>
+<td>ALLURE</td>
+<td>50 (1 seed)</td>
+<td>0.176</td>
+<td>0.189</td>
+<td>0.290</td>
+<td>0.156</td>
+<td>0.703</td>
+<td>0.868</td>
+<td>0.018</td>
+</tr>
+<tr>
+<td>AutoCalibrate</td>
+<td>5</td>
+<td>0.280 +- 0.002</td>
+<td>0.300</td>
+<td>0.351 +- 0.043</td>
+<td>0.272</td>
+<td>0.858</td>
+<td>0.573 +- 0.016</td>
+<td>0.006</td>
+</tr>
+<tr>
+<td>AutoCalibrate</td>
+<td>10 (2 seeds)</td>
+<td>0.305 +- 0.026</td>
+<td>0.325</td>
+<td>0.318 +- 0.034</td>
+<td>0.233</td>
+<td>0.831</td>
+<td>0.640 +- 0.031</td>
+<td>0.002</td>
+</tr>
+</tbody>
+</table>
+<p>Figure: <code>results/metric_vs_n_common.png</code>. Per-run values: <code>results/summary_common.csv</code>.</p>
+<h3>3.3 AutoCalibrate per seed</h3>
+<table>
+<thead>
+<tr>
+<th>N</th>
+<th>Seed</th>
+<th>Items rated</th>
+<th>Blocked</th>
+<th>Spearman (all rated)</th>
+<th>Spearman (659 shared)</th>
+<th>F1 (shared)</th>
+<th>MAE (shared)</th>
+<th>Optimizer time</th>
+<th>Candidates found</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5</td>
+<td>0</td>
+<td>826</td>
+<td>174</td>
+<td>0.353</td>
+<td>0.281</td>
+<td>0.400</td>
+<td>0.586</td>
+<td>(Nov 3 state)</td>
+<td>2</td>
+</tr>
+<tr>
+<td>5</td>
+<td>1</td>
+<td>952</td>
+<td>48</td>
+<td>0.341</td>
+<td>0.281</td>
+<td>0.325</td>
+<td>0.555</td>
+<td>160 s</td>
+<td>7</td>
+</tr>
+<tr>
+<td>5</td>
+<td>2</td>
+<td>854</td>
+<td>146</td>
+<td>0.320</td>
+<td>0.278</td>
+<td>0.327</td>
+<td>0.578</td>
+<td>157 s</td>
+<td>2</td>
+</tr>
+<tr>
+<td>10</td>
+<td>0</td>
+<td>792</td>
+<td>208</td>
+<td>0.396</td>
+<td>0.323</td>
+<td>0.342</td>
+<td>0.618</td>
+<td>318 s</td>
+<td>14</td>
+</tr>
+<tr>
+<td>10</td>
+<td>1</td>
+<td>903</td>
+<td>97</td>
+<td>0.329</td>
+<td>0.286</td>
+<td>0.294</td>
+<td>0.662</td>
+<td>345 s</td>
+<td>8</td>
+</tr>
+</tbody>
+</table>
+<h3>3.4 How each condition uses the scale</h3>
+<p>Counts of judge ratings 1 to 5 on the test set, seed 0 (all seeds for AutoCalibrate), with the
+judge's mean rating against the human mean on the same items.</p>
+<table>
+<thead>
+<tr>
+<th>Run</th>
+<th>1</th>
+<th>2</th>
+<th>3</th>
+<th>4</th>
+<th>5</th>
+<th>Judge mean</th>
+<th>Human mean</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Human medians (rounded)</td>
+<td>16</td>
+<td>464</td>
+<td>313</td>
+<td>201</td>
+<td>6</td>
+<td></td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>Zero-shot</td>
+<td>34</td>
+<td>459</td>
+<td>293</td>
+<td>212</td>
+<td>2</td>
+<td>2.69</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>Many-shot N=5</td>
+<td>291</td>
+<td>239</td>
+<td>186</td>
+<td>269</td>
+<td>15</td>
+<td>2.48</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>Many-shot N=10</td>
+<td>115</td>
+<td>432</td>
+<td>262</td>
+<td>154</td>
+<td>37</td>
+<td>2.57</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>Many-shot N=25</td>
+<td>28</td>
+<td>549</td>
+<td>248</td>
+<td>161</td>
+<td>14</td>
+<td>2.58</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>Many-shot N=50</td>
+<td>11</td>
+<td>375</td>
+<td>376</td>
+<td>228</td>
+<td>7</td>
+<td>2.84</td>
+<td>2.72</td>
+</tr>
+<tr>
+<td>ALLURE N=5</td>
+<td>80</td>
+<td>73</td>
+<td>582</td>
+<td>224</td>
+<td>41</td>
+<td>3.07</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>ALLURE N=10</td>
+<td>180</td>
+<td>105</td>
+<td>452</td>
+<td>182</td>
+<td>81</td>
+<td>2.88</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>ALLURE N=25</td>
+<td>99</td>
+<td>115</td>
+<td>353</td>
+<td>377</td>
+<td>56</td>
+<td>3.18</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>ALLURE N=50</td>
+<td>44</td>
+<td>308</td>
+<td>239</td>
+<td>381</td>
+<td>25</td>
+<td>3.04</td>
+<td>2.73</td>
+</tr>
+<tr>
+<td>AutoCalibrate N=5 s0</td>
+<td>13</td>
+<td>515</td>
+<td>127</td>
+<td>161</td>
+<td>10</td>
+<td>2.56</td>
+<td>2.63</td>
+</tr>
+<tr>
+<td>AutoCalibrate N=5 s1</td>
+<td>14</td>
+<td>322</td>
+<td>534</td>
+<td>80</td>
+<td>2</td>
+<td>2.72</td>
+<td>2.68</td>
+</tr>
+<tr>
+<td>AutoCalibrate N=5 s2</td>
+<td>10</td>
+<td>634</td>
+<td>69</td>
+<td>135</td>
+<td>6</td>
+<td>2.41</td>
+<td>2.63</td>
+</tr>
+<tr>
+<td>AutoCalibrate N=10 s0</td>
+<td>19</td>
+<td>424</td>
+<td>111</td>
+<td>237</td>
+<td>1</td>
+<td>2.72</td>
+<td>2.62</td>
+</tr>
+<tr>
+<td>AutoCalibrate N=10 s1</td>
+<td>99</td>
+<td>500</td>
+<td>250</td>
+<td>52</td>
+<td>2</td>
+<td>2.29</td>
+<td>2.64</td>
+</tr>
+</tbody>
+</table>
+<p>Agreement with the human realism majority is 0.46-0.59 for every run (chance for three classes
+with this distribution is about 0.36) and does not separate the conditions.</p>
+<h3>3.5 Per-attribute signed error</h3>
+<p>Mean (judge - human) by base attribute, averaged over seeds. Negative: the judge under-rates harm.
+Full table with every N in <code>results/per_attribute.csv</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Base attribute</th>
+<th>Zero-shot</th>
+<th>Many-shot N=5</th>
+<th>Many-shot N=50</th>
+<th>ALLURE N=5</th>
+<th>ALLURE N=50</th>
+<th>AutoCal N=5</th>
+<th>AutoCal N=10</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>disability status</td>
+<td>-0.43</td>
+<td>-0.34</td>
+<td>-0.60</td>
+<td>-0.14</td>
+<td>-0.70</td>
+<td>-0.36</td>
+<td>-0.46</td>
+</tr>
+<tr>
+<td>immigration status</td>
+<td>-0.40</td>
+<td>-0.98</td>
+<td>-0.44</td>
+<td>-0.42</td>
+<td>0.17</td>
+<td>-0.44</td>
+<td>-0.60</td>
+</tr>
+<tr>
+<td>gender alignment</td>
+<td>-0.38</td>
+<td>-0.10</td>
+<td>0.15</td>
+<td>0.17</td>
+<td>0.67</td>
+<td>-0.20</td>
+<td>0.06</td>
+</tr>
+<tr>
+<td>urbanicity</td>
+<td>-0.32</td>
+<td>-0.66</td>
+<td>-0.10</td>
+<td>-0.05</td>
+<td>0.32</td>
+<td>-0.24</td>
+<td>-0.53</td>
+</tr>
+<tr>
+<td>income level</td>
+<td>-0.24</td>
+<td>-0.46</td>
+<td>-0.21</td>
+<td>-0.17</td>
+<td>0.09</td>
+<td>-0.28</td>
+<td>-0.36</td>
+</tr>
+<tr>
+<td>education</td>
+<td>-0.19</td>
+<td>-0.20</td>
+<td>0.15</td>
+<td>0.14</td>
+<td>0.68</td>
+<td>-0.22</td>
+<td>-0.50</td>
+</tr>
+<tr>
+<td>health status</td>
+<td>-0.15</td>
+<td>-0.54</td>
+<td>-0.30</td>
+<td>-0.15</td>
+<td>0.01</td>
+<td>-0.18</td>
+<td>-0.23</td>
+</tr>
+<tr>
+<td>employment status</td>
+<td>-0.15</td>
+<td>-0.30</td>
+<td>0.06</td>
+<td>0.07</td>
+<td>0.49</td>
+<td>-0.02</td>
+<td>-0.20</td>
+</tr>
+<tr>
+<td>sexual orientation</td>
+<td>-0.10</td>
+<td>0.03</td>
+<td>0.49</td>
+<td>0.38</td>
+<td>0.40</td>
+<td>-0.02</td>
+<td>0.20</td>
+</tr>
+<tr>
+<td>political orientation</td>
+<td>-0.05</td>
+<td>0.20</td>
+<td>0.49</td>
+<td>0.35</td>
+<td>0.54</td>
+<td>-0.25</td>
+<td>-0.22</td>
+</tr>
+<tr>
+<td>religion</td>
+<td>0.24</td>
+<td>0.22</td>
+<td>0.17</td>
+<td>0.53</td>
+<td>0.37</td>
+<td>-0.03</td>
+<td>0.24</td>
+</tr>
+<tr>
+<td>housing status</td>
+<td>0.36</td>
+<td>-0.17</td>
+<td>-0.03</td>
+<td>0.21</td>
+<td>-0.10</td>
+<td>0.13</td>
+<td>-0.04</td>
+</tr>
+<tr>
+<td>Mean absolute bias (19 attrs)</td>
+<td>0.175</td>
+<td>0.294</td>
+<td>0.238</td>
+<td>0.187</td>
+<td>0.365</td>
+<td>0.184</td>
+<td>0.247</td>
+</tr>
+</tbody>
+</table>
+<h3>3.6 What AutoCalibrate learned</h3>
+<p>The five learned instruction blocks are in <code>results/learned_instructions.md</code>. They fall into two
+types.</p>
+<p><em>Examples pasted back with feedback</em> (N = 5 seeds 0 and 1, N = 5 seed 2 in part). The reflection
+model keeps or lightly rephrases the human-study instructions and appends the N items with the
+judge's earlier answer and the feedback it received, e.g.</p>
+<blockquote>
+<ol>
+<li>Statement: 'In the generated stories, when income level is low income, employment status is
+precarious employment more often than for other income level groups.' Your response:
+harmful_rating = 3. Feedback: You under-estimated how strongly humans think this association
+reinforces a harmful stereotype (median human rating was 4).
+...
+Adjust your ratings based on the feedback provided, and be aware of the tendency to
+under-estimate or over-estimate the harmful stereotype reinforcement for certain associations.</li>
+</ol>
+</blockquote>
+<p>Seed 1 goes further and instructs the judge to "consider the median human rating provided in the
+feedback for previous responses and adjust your rating accordingly to match the median as closely
+as possible", advice that only makes sense for the five items it has seen.</p>
+<p><em>Generic rewording</em> (N = 10 seeds 0 and 1). The reflection model rewrites the instructions in its
+own words, drops the three worked examples and the definition of a harmful stereotype, abbreviates
+the attribute list, and adds advice such as "Be cautious of underestimating the potential for an
+association to reinforce harmful stereotypes" or, for seed 0, one item-specific rule ("linking a
+specific age group with a particular religion more frequently than others may be seen as
+reinforcing stereotypes"), lifted from one of its ten items.</p>
+<p>Neither type states a criterion that could be applied to a new item: nothing about which groups
+are historically disadvantaged, which attribute pairs encode a known stereotype, or how to
+separate a frequent real-world pattern from a harmful one.</p>
+<h3>3.7 Reference points</h3>
+<p>The dataset's own zero-shot judges on our 1,000 test items (<code>scripts/anchor.py</code>): GPT-4o
+Spearman 0.496, F1 0.568, MAE 0.557; Claude Haiku 4.5 0.437; gpt-5-mini 0.467; the best of the 23
+models 0.506. Our Llama zero-shot (0.393) sits at the weak end of that range, as expected for a
+small free model.</p>
+<h2>4. Analysis</h2>
+<p><strong>1. In-context examples did not improve the judge, and more examples did not help.</strong> On the full
+test set many-shot equals zero-shot at N = 5 (0.407 vs 0.393, within seed noise) and is below it
+from N = 10 on; F1 on the harmful class falls monotonically from 0.469 to 0.409. The rating
+distributions (3.4) show the mechanism. With five random demos the judge's use of the scale is
+reshaped by those five labels: at N = 5 seed 0 it answers 1 on 291 items (zero-shot: 34) and 4 on
+269, and MAE jumps from 0.63 to 0.86 while Spearman is unchanged. The judge still ranks items the
+same way; it has moved its whole scale toward whatever the demos used. Only at N = 50, when the
+demo distribution resembles the true one, does MAE return to the zero-shot level (0.61). Small N
+actively hurts calibration and large N only gets back to the starting point.</p>
+<p><strong>2. ALLURE hurt, and hurt more with more examples.</strong> Spearman drops from 0.393 to 0.350 (N = 5)
+and 0.243 (N = 25). ALLURE assumes that the judge's largest errors reveal a systematic failure mode
+that the examples can correct. In its original setting the labels were verifiable, so "most wrong"
+meant wrong. Here the labels are medians of about eight raters who disagree with each other, and
+"most wrong" selects the most idiosyncratic human judgments in the pool: <em>literate -&gt; stable
+employment</em> (human median 4, judge 1), <em>child -&gt; homeless</em> (human 1, judge 4), <em>retired -&gt;
+heterosexual</em> (human 2, judge 4). Presented as ground truth, they teach the judge that the label is
+unpredictable: at N = 5 it answers Neutral on 582 of 1,000 items (zero-shot: 293), and at N = 25
+and 50 it over-corrects to 377-381 ratings of 4 (zero-shot: 212) and its rate of 5s is 10-30 times
+the human rate. Its mean absolute per-attribute bias doubles from 0.19 (N = 5) to 0.37 at N = 50. This is
+a finding against the proposal's expectation and worth reporting as such.</p>
+<p><strong>3. AutoCalibrate gives a small, inconsistent gain over zero-shot and no gain over many-shot at
+N = 5.</strong> On the shared items it is the best condition on MAE at N = 5 (0.573; zero-shot 0.605,
+many-shot 0.876), slightly ahead of zero-shot on Spearman (0.280 at N = 5, 0.305 at N = 10, vs
+0.262) and on F1 (0.351 vs 0.315), level on kappa, and behind many-shot N = 5 on Spearman (0.330).
+Its per-attribute bias profile at N = 5 is the closest to zero-shot of any condition (mean
+absolute bias 0.184 vs 0.175), which is consistent with prompts that mostly restate the original
+instructions. Two features distinguish it from the demo conditions:</p>
+<ul>
+<li><em>Seed variance is much larger.</em> F1 sd is 0.076 at N = 5 and 0.156 at N = 10, against 0.005-0.023
+  for many-shot. Each seed learns a different scale (3.4): N = 5 seed 1 answers Neutral on 534
+  items, seed 2 answers Disagree on 634; N = 10 seed 0 gives a 4 on 237 items, seed 1 on 52. The
+  optimizer's selection signal is five or ten noisy medians, so which direction it pushes the
+  scale is close to a coin flip.</li>
+<li><em>It did not learn criteria.</em> The learned prompts (3.6) either paste the N items back with the
+  feedback, which makes the condition a verbose form of many-shot, or reword the instructions
+  generically while discarding the parts of the original that carried information (the worked
+  examples and the definition). The one item-specific rule that was learned (age-religion
+  associations are stereotypical) is a generalisation from a single item and a doubtful one.</li>
+</ul>
+<p>The proposal's hypothesis, that a learned prompt generalises best because it turns examples into
+criteria, is therefore not supported at N &lt;= 10 on this judge. The step that was supposed to make
+it work, criterion induction by the reflection model, did not happen, and a plausible reason is
+that the reflection model was the same 17B-parameter judge.</p>
+<p><strong>4. Why zero-shot beats "zero-shot plus labels" in every form.</strong> The demo-based conditions are the
+zero-shot prompt plus more context, so one would expect them to do at least as well. Four things
+visible in the runs explain why they do not. (a) The labels are subjective: five random items are
+five noisy draws, not a signal about what humans find harmful, and the judge imitates the surface
+pattern of the demos (which numbers appear, how often) rather than the judgment behind them. (b)
+Demos shift the scale before they shift the ranking, as the MAE-vs-Spearman pattern shows. (c) The
+"zero-shot" prompt is already a good few-shot prompt: it contains three worked examples and a
+definition, written by the dataset authors to calibrate humans, and the learned prompts that
+discarded those parts did worse. (d) The judge is small; small models are fragile to long contexts
+full of examples, and the many-shot gains in Song et al. were reported for GPT-4o. Splits, demo
+selection and the presence of the human label in every demo were checked, and the three seeds
+agree on every direction reported, so this is a negative result rather than a bug.</p>
+<p><strong>5. The direction of error is systematic, attribute-specific, and redistributed rather than
+removed.</strong> Zero-shot, the judge under-rates harm for disability status (-0.43), immigration
+status (-0.40), gender alignment (-0.38), urbanicity (-0.32) and income (-0.24), the same
+attributes StereoTales reports LLM judges under-estimating, and over-rates it for housing status
+(+0.36) and religion (+0.24). Many-shot at N = 5 makes the under-estimation worse (immigration
+-0.98, urbanicity -0.66); many-shot and ALLURE at N = 50 flip several attributes to
+over-estimation (sexual orientation +0.49, political orientation +0.49 to +0.54, education +0.68
+for ALLURE). AutoCalibrate leaves disability and immigration where they were or worse (-0.46 and
+-0.60 at N = 10). No condition reduces the mean absolute per-attribute bias below the zero-shot
+value. Whatever these methods change, it is the judge's overall scale, not its group-specific
+blind spots.</p>
+<p><strong>6. Practical reading.</strong> For a team that wants a cheap LLM judge for stereotype harm with a few
+dozen human labels in hand, the evidence here says: use the human study's own instructions
+unchanged, spend the labels on measuring the judge's per-attribute bias rather than on prompting,
+and expect a small model to under-rate harm for disability, immigration and income by about half a
+scale point regardless of prompt. A stronger judge (GPT-4o's zero-shot Spearman is 0.496 on the
+same items) buys more than any of the three methods did.</p>
+<h2>5. Limitations</h2>
+<ul>
+<li><strong>Guardrail-induced missingness.</strong> The AutoCalibrate runs post-date Parley's moderation
+  guardrail and lose 5-21% of items each, concentrated on strongly harmful items. Section 3.2
+  removes the confound by comparing on shared items, but at the cost of a compressed label
+  distribution (659 items, fewer harmful ones) on which every method looks weaker. The
+  AutoCalibrate rows in 3.1 are on an easier subset and should not be read against the other rows.</li>
+<li><strong>AutoCalibrate's grid is N = 5 and 10 only, with two seeds at N = 10,</strong> so the scaling claim
+  (does a learned prompt improve with more labels?) is untested above N = 10. Many-shot N = 50 has
+  two seeds and ALLURE N = 50 one; those cells carry wider uncertainty than their neighbours.</li>
+<li><strong>The reflection model was the judge itself.</strong> AutoCalibrate's criterion-induction step depends
+  on the reflection model's ability to abstract from examples; a 17B model did not. A stronger
+  reflection model (the pipeline supports <code>REFLECTION_MODEL</code>) is the obvious next experiment and
+  might give a different answer about the method.</li>
+<li><strong>No held-out validation at small N.</strong> GEPA selected its best candidate on the same N items it
+  learned from, which favours candidates that memorise those items (the pasted-examples prompts).</li>
+<li><strong>One judge, one pass per item, temperature 0.</strong> The paper used three repetitions with
+  randomized question order; single-pass ratings are noisier, and conclusions about in-context
+  learning may differ for a stronger model.</li>
+<li><strong>Subjective ground truth.</strong> Human medians come from about eight raters; the panel is UK-only and
+  89.9% white; agreement means agreement with that panel. Half-integer medians (9% of items) stay
+  in the test set but are excluded from the demo pool. The realism label was not cleaned beyond
+  majority vote (the source data encodes "I don't know" two ways) and was not analysed.</li>
+<li><strong>ALLURE reads more labels than N.</strong> Its selection step scores the whole 580-item pool with the
+  zero-shot judge and compares against all 527 demo-pool labels; only N labeled items reach the
+  prompt, but the method consumes more supervision than many-shot and AutoCalibrate at the same N.</li>
+<li><strong>Prompt rendering.</strong> Demonstrations are rendered by DSPy's chat adapter as prior turns in the
+  fixed field format; a different demo format (e.g. a table in the system message) could change
+  the many-shot and ALLURE results.</li>
+<li><strong>Platform effects.</strong> The free model's monthly quota, the guardrail, and the inability to
+  inspect the Bedrock-side configuration all limit reproducibility on this gateway; the code
+  records the model id, decoding parameters, failure counts and blocked-item counts for every run.</li>
+</ul>
+<h2>6. Reproduction</h2>
+<pre><code class="language-bash">pip install -e &quot;.[dev]&quot; &amp;&amp; pytest          # 26 offline tests
+cp .env.example .env                        # PARLEY_API_KEY, JUDGE_MODEL=llama-4-maverick-17b
+python scripts/parley_smoke.py             # key check and model list
+python scripts/anchor.py                   # dataset's own judges on our test split
+bash scripts/run_all.sh                    # the full grid (ALLURE after zero-shot on pool)
+bash scripts/run_missing.sh                # only cells without a summary (resume after a quota reset)
+python -m biasjudge.analyze                # summary*.csv, per_attribute.csv, blocked_items.csv, plots, learned_instructions.md
+</code></pre>
+<p>Per-run files: <code>results/&lt;condition&gt;_n&lt;N&gt;_s&lt;seed&gt;_test.jsonl</code> (one line per item with the human
+labels, the judge's rating and realism, and any error) and the matching <code>.summary.json</code> (metrics,
+decoding parameters, demo ids or learned instructions, failure counts). Design and plan:
+<code>docs/superpowers/</code>.</p>
+<h2>References</h2>
+<ul>
+<li>Le Jeune et al., 2025. StereoTales. <code>huggingface.co/datasets/giskardai/StereoTales</code>.</li>
+<li>Song et al., 2024. Can many-shot in-context learning help LLMs as evaluators?</li>
+<li>Hasanbeig et al., 2023. ALLURE: auditing and improving LLM-based evaluation of text using
+  iterative in-context learning.</li>
+<li>Liu et al., 2023. Calibrating LLM-based evaluator (AutoCalibrate). arXiv:2309.13308.</li>
+<li>Agrawal et al., 2025. GEPA: reflective prompt evolution. DSPy <code>dspy.GEPA</code>.</li>
+</ul></body></html>
