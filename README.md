@@ -15,10 +15,7 @@ human median as a function of N ∈ {0, 5, 10, 25, 50} under four conditions:
 | ALLURE | the N items the zero-shot judge got most wrong, in context ([Hasanbeig et al.](https://arxiv.org/abs/2309.13701)) | Maeve |
 | AutoCalibrate | N items drive DSPy's GEPA optimizer to rewrite the scoring instructions ([Liu et al.](https://arxiv.org/abs/2309.13308)) | Sam |
 
-**Results report: `docs/report.md`** (interim, 33 of 38 runs: zero-shot, many-shot and ALLURE
-complete on the free Llama judge except three N = 50 cells; AutoCalibrate done for N = 5 and
-two seeds of N = 10. Two free keys' monthly quotas are spent, and since Nov 2026 Parley's free
-Llama has a moderation guardrail that blanks part of each AutoCalibrate run, see report §6).
+**Full report (methods, results, analysis, limitations): `docs/report.md`.** Zero-shot, many-shot and ALLURE on the free Llama judge at N = 5-50, AutoCalibrate at N = 5 and 10. Parley's free Llama has a monthly quota and, since Nov 2026, a moderation guardrail that blanks part of each AutoCalibrate run (report section 2.6)..
 Design spec: `docs/superpowers/specs/2026-11-03-llm-bias-judge-design.md`.
 Implementation plan: `docs/superpowers/plans/2026-11-03-llm-bias-judge.md`.
 
