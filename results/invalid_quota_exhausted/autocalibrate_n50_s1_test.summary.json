@@ -79,7 +79,8 @@
     "f1": 0.46938775510204084,
     "kappa": 0.3413886566861716,
     "pred_five_rate": 0.002,
-    "human_five_rate": 0.006
+    "human_five_rate": 0.006,
+    "mse": 0.8025
   },
   "per_attribute": [
     {

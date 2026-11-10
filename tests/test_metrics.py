@@ -9,7 +9,7 @@ from biasjudge.metrics import compute_metrics, per_attribute_delta
 
 def test_perfect_agreement():
     m = compute_metrics([1, 2, 3, 4, 5], [1, 2, 3, 4, 5])
-    assert m["spearman"] == pytest.approx(1) and m["pearson"] == pytest.approx(1) and m["mae"] == 0
+    assert m["spearman"] == pytest.approx(1) and m["pearson"] == pytest.approx(1) and m["mae"] == 0 and m["mse"] == 0
     assert m["f1"] == 1 and m["kappa"] == 1 and m["accuracy"] == 1
     assert m["n"] == 5 and m["n_failed"] == 0
     assert m["pred_five_rate"] == 0.2 and m["human_five_rate"] == 0.2
@@ -27,7 +27,7 @@ def test_binary_metrics():
 
 def test_constant_predictions_give_nan_correlation():
     m = compute_metrics([1, 2, 3, 4], [3, 3, 3, 3])
-    assert math.isnan(m["spearman"]) and m["mae"] == 1.0
+    assert math.isnan(m["spearman"]) and m["mae"] == 1.0 and m["mse"] == 1.5
 
 
 def test_per_attribute_delta():

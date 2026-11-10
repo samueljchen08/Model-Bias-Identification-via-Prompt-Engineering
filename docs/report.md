@@ -158,7 +158,7 @@ Computed per run on the test items that run rated, judge rating against human me
 
 - **Spearman rho** and **Pearson r**: rank and linear agreement on the 1-5 scale. Spearman is the
   primary metric because the human medians are ordinal and bunched at 2 and 3.
-- **MAE**: mean |judge - human| on the 1-5 scale; measures calibration of the scale, not ranking.
+- **MAE** and **MSE**: mean absolute and mean squared error of the judge rating against the human median on the 1-5 scale. Both measure calibration of the scale rather than ranking; MSE weights large disagreements (two or more scale points) more heavily.
 - **F1, accuracy, Cohen's kappa** on the binary harmful label (both sides thresholded at >= 4).
   F1 is the positive-class F1 for "harmful".
 - **Rate of 5s**: how often the judge uses "Strongly agree" (humans: 0.6%).
@@ -198,19 +198,19 @@ LLM-judge ratings (`llm_evals/eval_results.parquet`, 23 models) restricted to ou
 
 Mean +- sd over seeds. Runs per cell: 3 unless stated.
 
-| Condition | N | Items rated | Spearman rho | Pearson r | F1 harmful | kappa | Accuracy | MAE | Rate of 5s |
-|---|---|---|---|---|---|---|---|---|---|
-| Zero-shot | 0 | 1,000 | 0.393 | 0.407 | 0.469 | 0.341 | 0.792 | 0.625 | 0.002 |
-| Many-shot | 5 | 1,000 | 0.407 +- 0.007 | 0.413 | 0.462 +- 0.005 | 0.310 | 0.747 | 0.855 +- 0.104 | 0.009 |
-| Many-shot | 10 | 1,000 | 0.383 +- 0.034 | 0.400 | 0.440 +- 0.023 | 0.325 | 0.808 | 0.706 +- 0.086 | 0.014 |
-| Many-shot | 25 | 1,000 | 0.361 +- 0.052 | 0.364 | 0.397 +- 0.055 | 0.263 | 0.779 | 0.640 +- 0.042 | 0.011 |
-| Many-shot | 50 (2 seeds) | 997-998 | 0.380 +- 0.024 | 0.382 | 0.409 +- 0.060 | 0.260 | 0.758 | 0.611 +- 0.020 | 0.005 |
-| ALLURE | 5 | 1,000 | 0.350 +- 0.025 | 0.361 | 0.448 +- 0.023 | 0.314 | 0.781 | 0.766 +- 0.031 | 0.054 |
-| ALLURE | 10 | 1,000 | 0.337 +- 0.017 | 0.348 | 0.431 +- 0.012 | 0.285 | 0.761 | 0.839 +- 0.056 | 0.064 |
-| ALLURE | 25 | 1,000 | 0.243 +- 0.064 | 0.271 | 0.413 +- 0.007 | 0.241 | 0.696 | 0.914 +- 0.075 | 0.048 |
-| ALLURE | 50 (1 seed) | 997 | 0.247 | 0.255 | 0.415 | 0.223 | 0.658 | 0.864 | 0.025 |
-| AutoCalibrate | 5 | 826-952 | 0.338 +- 0.016 | 0.351 | 0.373 +- 0.076 | 0.272 | 0.819 | 0.596 +- 0.029 | 0.007 |
-| AutoCalibrate | 10 (2 seeds) | 792-903 | 0.363 +- 0.047 | 0.375 | 0.336 +- 0.156 | 0.233 | 0.800 | 0.646 +- 0.034 | 0.002 |
+| Condition | N | Items rated | Spearman rho | Pearson r | F1 harmful | kappa | Accuracy | MAE | MSE | Rate of 5s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Zero-shot | 0 | 1,000 | 0.393 | 0.407 | 0.469 | 0.341 | 0.792 | 0.625 | 0.802 | 0.002 |
+| Many-shot | 5 | 1,000 | 0.407 +- 0.007 | 0.413 | 0.462 +- 0.005 | 0.310 | 0.747 | 0.855 +- 0.104 | 1.264 +- 0.199 | 0.009 |
+| Many-shot | 10 | 1,000 | 0.383 +- 0.034 | 0.400 | 0.440 +- 0.023 | 0.325 | 0.808 | 0.706 +- 0.086 | 0.985 +- 0.173 | 0.014 |
+| Many-shot | 25 | 1,000 | 0.361 +- 0.052 | 0.364 | 0.397 +- 0.055 | 0.263 | 0.779 | 0.640 +- 0.042 | 0.876 +- 0.095 | 0.011 |
+| Many-shot | 50 (2 seeds) | 997-998 | 0.380 +- 0.024 | 0.382 | 0.409 +- 0.060 | 0.260 | 0.758 | 0.611 +- 0.020 | 0.803 +- 0.033 | 0.005 |
+| ALLURE | 5 | 1,000 | 0.350 +- 0.025 | 0.361 | 0.448 +- 0.023 | 0.314 | 0.781 | 0.766 +- 0.031 | 1.072 +- 0.070 | 0.054 |
+| ALLURE | 10 | 1,000 | 0.337 +- 0.017 | 0.348 | 0.431 +- 0.012 | 0.285 | 0.761 | 0.839 +- 0.056 | 1.233 +- 0.105 | 0.064 |
+| ALLURE | 25 | 1,000 | 0.243 +- 0.064 | 0.271 | 0.413 +- 0.007 | 0.241 | 0.696 | 0.914 +- 0.075 | 1.375 +- 0.173 | 0.048 |
+| ALLURE | 50 (1 seed) | 997 | 0.247 | 0.255 | 0.415 | 0.223 | 0.658 | 0.864 | 1.295 | 0.025 |
+| AutoCalibrate | 5 | 826-952 | 0.338 +- 0.016 | 0.351 | 0.373 +- 0.076 | 0.272 | 0.819 | 0.596 +- 0.029 | 0.780 +- 0.096 | 0.007 |
+| AutoCalibrate | 10 (2 seeds) | 792-903 | 0.363 +- 0.047 | 0.375 | 0.336 +- 0.156 | 0.233 | 0.800 | 0.646 +- 0.034 | 0.868 +- 0.002 | 0.002 |
 
 Figure: `results/metric_vs_n.png`. Per-run values: `results/summary.csv`.
 
@@ -228,31 +228,31 @@ Because the removed items are mostly the strongly harmful ones, the human scale 
 every correlation is lower than in 3.1; differences between rows, not absolute values, are the
 point of this table.
 
-| Condition | N | Spearman rho | Pearson r | F1 harmful | kappa | Accuracy | MAE | Rate of 5s |
-|---|---|---|---|---|---|---|---|---|
-| Zero-shot | 0 | 0.262 | 0.289 | 0.315 | 0.243 | 0.868 | 0.605 | 0.003 |
-| Many-shot | 5 | 0.330 +- 0.012 | 0.338 | 0.338 +- 0.012 | 0.238 | 0.815 | 0.876 +- 0.115 | 0.007 |
-| Many-shot | 10 | 0.296 +- 0.034 | 0.306 | 0.303 +- 0.013 | 0.233 | 0.869 | 0.684 +- 0.076 | 0.011 |
-| Many-shot | 25 | 0.279 +- 0.030 | 0.276 | 0.269 +- 0.032 | 0.181 | 0.842 | 0.600 +- 0.038 | 0.010 |
-| Many-shot | 50 (2 seeds) | 0.299 +- 0.016 | 0.293 | 0.272 +- 0.031 | 0.165 | 0.805 | 0.598 +- 0.011 | 0.005 |
-| ALLURE | 5 | 0.251 +- 0.032 | 0.272 | 0.332 +- 0.036 | 0.252 | 0.854 | 0.770 +- 0.071 | 0.042 |
-| ALLURE | 10 | 0.261 +- 0.019 | 0.274 | 0.312 +- 0.036 | 0.218 | 0.829 | 0.845 +- 0.048 | 0.041 |
-| ALLURE | 25 | 0.132 +- 0.089 | 0.155 | 0.255 +- 0.039 | 0.135 | 0.743 | 0.931 +- 0.095 | 0.026 |
-| ALLURE | 50 (1 seed) | 0.176 | 0.189 | 0.290 | 0.156 | 0.703 | 0.868 | 0.018 |
-| AutoCalibrate | 5 | 0.280 +- 0.002 | 0.300 | 0.351 +- 0.043 | 0.272 | 0.858 | 0.573 +- 0.016 | 0.006 |
-| AutoCalibrate | 10 (2 seeds) | 0.305 +- 0.026 | 0.325 | 0.318 +- 0.034 | 0.233 | 0.831 | 0.640 +- 0.031 | 0.002 |
+| Condition | N | Spearman rho | Pearson r | F1 harmful | kappa | Accuracy | MAE | MSE | Rate of 5s |
+|---|---|---|---|---|---|---|---|---|---|
+| Zero-shot | 0 | 0.262 | 0.289 | 0.315 | 0.243 | 0.868 | 0.605 | 0.767 | 0.003 |
+| Many-shot | 5 | 0.330 +- 0.012 | 0.338 | 0.338 +- 0.012 | 0.238 | 0.815 | 0.876 +- 0.115 | 1.288 +- 0.209 | 0.007 |
+| Many-shot | 10 | 0.296 +- 0.034 | 0.306 | 0.303 +- 0.013 | 0.233 | 0.869 | 0.684 +- 0.076 | 0.958 +- 0.144 | 0.011 |
+| Many-shot | 25 | 0.279 +- 0.030 | 0.276 | 0.269 +- 0.032 | 0.181 | 0.842 | 0.600 +- 0.038 | 0.831 +- 0.083 | 0.010 |
+| Many-shot | 50 (2 seeds) | 0.299 +- 0.016 | 0.293 | 0.272 +- 0.031 | 0.165 | 0.805 | 0.598 +- 0.011 | 0.807 +- 0.011 | 0.005 |
+| ALLURE | 5 | 0.251 +- 0.032 | 0.272 | 0.332 +- 0.036 | 0.252 | 0.854 | 0.770 +- 0.071 | 1.076 +- 0.074 | 0.042 |
+| ALLURE | 10 | 0.261 +- 0.019 | 0.274 | 0.312 +- 0.036 | 0.218 | 0.829 | 0.845 +- 0.048 | 1.222 +- 0.102 | 0.041 |
+| ALLURE | 25 | 0.132 +- 0.089 | 0.155 | 0.255 +- 0.039 | 0.135 | 0.743 | 0.931 +- 0.095 | 1.390 +- 0.219 | 0.026 |
+| ALLURE | 50 (1 seed) | 0.176 | 0.189 | 0.290 | 0.156 | 0.703 | 0.868 | 1.297 | 0.018 |
+| AutoCalibrate | 5 | 0.280 +- 0.002 | 0.300 | 0.351 +- 0.043 | 0.272 | 0.858 | 0.573 +- 0.016 | 0.755 +- 0.070 | 0.006 |
+| AutoCalibrate | 10 (2 seeds) | 0.305 +- 0.026 | 0.325 | 0.318 +- 0.034 | 0.233 | 0.831 | 0.640 +- 0.031 | 0.865 +- 0.005 | 0.002 |
 
 Figure: `results/metric_vs_n_common.png`. Per-run values: `results/summary_common.csv`.
 
 ### 3.3 AutoCalibrate per seed
 
-| N | Seed | Items rated | Blocked | Spearman (all rated) | Spearman (659 shared) | F1 (shared) | MAE (shared) | Optimizer time | Candidates found |
-|---|---|---|---|---|---|---|---|---|---|
-| 5 | 0 | 826 | 174 | 0.353 | 0.281 | 0.400 | 0.586 | (Nov 3 state) | 2 |
-| 5 | 1 | 952 | 48 | 0.341 | 0.281 | 0.325 | 0.555 | 160 s | 7 |
-| 5 | 2 | 854 | 146 | 0.320 | 0.278 | 0.327 | 0.578 | 157 s | 2 |
-| 10 | 0 | 792 | 208 | 0.396 | 0.323 | 0.342 | 0.618 | 318 s | 14 |
-| 10 | 1 | 903 | 97 | 0.329 | 0.286 | 0.294 | 0.662 | 345 s | 8 |
+| N | Seed | Items rated | Blocked | Spearman (all rated) | Spearman (659 shared) | F1 (shared) | MAE (shared) | MSE (shared) | Optimizer time | Candidates found |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5 | 0 | 826 | 174 | 0.353 | 0.281 | 0.400 | 0.586 | 0.790 | (Nov 3 state) | 2 |
+| 5 | 1 | 952 | 48 | 0.341 | 0.281 | 0.325 | 0.555 | 0.675 | 160 s | 7 |
+| 5 | 2 | 854 | 146 | 0.320 | 0.278 | 0.327 | 0.578 | 0.802 | 157 s | 2 |
+| 10 | 0 | 792 | 208 | 0.396 | 0.323 | 0.342 | 0.618 | 0.861 | 318 s | 14 |
+| 10 | 1 | 903 | 97 | 0.329 | 0.286 | 0.294 | 0.662 | 0.869 | 345 s | 8 |
 
 ### 3.4 How each condition uses the scale
 
@@ -349,7 +349,8 @@ distributions (3.4) show the mechanism. With five random demos the judge's use o
 reshaped by those five labels: at N = 5 seed 0 it answers 1 on 291 items (zero-shot: 34) and 4 on
 269, and MAE jumps from 0.63 to 0.86 while Spearman is unchanged. The judge still ranks items the
 same way; it has moved its whole scale toward whatever the demos used. Only at N = 50, when the
-demo distribution resembles the true one, does MAE return to the zero-shot level (0.61). Small N
+demo distribution resembles the true one, does MAE return to the zero-shot level (0.61). MSE tells the same story more sharply: many-shot N = 5 has an MSE of 1.26 against 0.80 zero-shot, because
+the demos push a substantial number of items two or more scale points away from the human median. Small N
 actively hurts calibration and large N only gets back to the starting point.
 
 **2. ALLURE hurt, and hurt more with more examples.** Spearman drops from 0.393 to 0.350 (N = 5)
@@ -366,7 +367,7 @@ a finding against the proposal's expectation and worth reporting as such.
 
 **3. AutoCalibrate gives a small, inconsistent gain over zero-shot and no gain over many-shot at
 N = 5.** On the shared items it is the best condition on MAE at N = 5 (0.573; zero-shot 0.605,
-many-shot 0.876), slightly ahead of zero-shot on Spearman (0.280 at N = 5, 0.305 at N = 10, vs
+many-shot 0.876) and on MSE (0.755 vs 0.767 and 1.288), slightly ahead of zero-shot on Spearman (0.280 at N = 5, 0.305 at N = 10, vs
 0.262) and on F1 (0.351 vs 0.315), level on kappa, and behind many-shot N = 5 on Spearman (0.330).
 Its per-attribute bias profile at N = 5 is the closest to zero-shot of any condition (mean
 absolute bias 0.184 vs 0.175), which is consistent with prompts that mostly restate the original

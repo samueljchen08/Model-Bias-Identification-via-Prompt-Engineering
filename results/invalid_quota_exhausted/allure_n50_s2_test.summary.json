@@ -74,7 +74,8 @@
     "f1": NaN,
     "kappa": NaN,
     "pred_five_rate": NaN,
-    "human_five_rate": NaN
+    "human_five_rate": NaN,
+    "mse": NaN
   },
   "per_attribute": [],
   "errors": [

@@ -7,7 +7,7 @@ import pandas as pd
 from scipy import stats
 
 HARMFUL_THRESHOLD = 4
-METRIC_KEYS = ["spearman", "pearson", "mae", "accuracy", "f1", "kappa", "pred_five_rate", "human_five_rate"]
+METRIC_KEYS = ["spearman", "pearson", "mae", "mse", "accuracy", "f1", "kappa", "pred_five_rate", "human_five_rate"]
 
 
 def _is_missing(x) -> bool:
@@ -40,6 +40,7 @@ def compute_metrics(human, pred) -> dict:
         spearman=float(stats.spearmanr(h, p).statistic) if varies else float("nan"),
         pearson=float(stats.pearsonr(h, p).statistic) if varies else float("nan"),
         mae=float(np.abs(h - p).mean()),
+        mse=float(((h - p) ** 2).mean()),
         accuracy=float((hb == pb).mean()),
         f1=(2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) else float("nan"),
         kappa=_kappa(hb, pb),
